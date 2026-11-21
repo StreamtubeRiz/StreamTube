@@ -1,0 +1,6 @@
+{
+  "name": "StreamTubeᴿⁱᶻ",
+  "description": "Fast YouTube-style video & Shorts streaming and 1-click multi-format downloader powered by MediaServiceCore, Media3 ExoPlayer, and Cronet.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
