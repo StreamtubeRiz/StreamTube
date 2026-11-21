@@ -4,6 +4,8 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
+import android.os.Build
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
@@ -50,6 +52,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.ThumbUp
+import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Download
@@ -180,6 +183,7 @@ fun WatchScreen(
     isRelatedLoading: Boolean = false
 ) {
     var isFullscreen by rememberSaveable { mutableStateOf(false) }
+    var isFullscreenZoomFill by rememberSaveable { mutableStateOf(true) }
     var showControls by remember { mutableStateOf(true) }
     var showQualityMenu by remember { mutableStateOf(false) }
     var showSpeedMenu by remember { mutableStateOf(false) }
@@ -197,21 +201,40 @@ fun WatchScreen(
     val view = LocalView.current
     val activity = remember(context) { context.findActivity() }
 
-    // True Landscape Fullscreen + Immersive Status/Nav Bar Auto-Hide
+    // True Landscape Fullscreen + Display Cutout Short Edges + Immersive Status/Nav Bar Auto-Hide
     DisposableEffect(isFullscreen, activity) {
         val window = activity?.window
         val controller = if (window != null) WindowCompat.getInsetsController(window, view) else null
+        val originalCutoutMode = if (window != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes.layoutInDisplayCutoutMode
+        } else 0
+
         if (isFullscreen) {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            if (window != null && Build.VERSION_CODES.P <= Build.VERSION.SDK_INT) {
+                window.attributes = window.attributes.apply {
+                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            }
             controller?.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             controller?.hide(WindowInsetsCompat.Type.systemBars())
         } else {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            if (window != null && Build.VERSION_CODES.P <= Build.VERSION.SDK_INT) {
+                window.attributes = window.attributes.apply {
+                    layoutInDisplayCutoutMode = originalCutoutMode
+                }
+            }
             controller?.show(WindowInsetsCompat.Type.systemBars())
         }
         onDispose {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            if (window != null && Build.VERSION_CODES.P <= Build.VERSION.SDK_INT) {
+                window.attributes = window.attributes.apply {
+                    layoutInDisplayCutoutMode = originalCutoutMode
+                }
+            }
             controller?.show(WindowInsetsCompat.Type.systemBars())
         }
     }
@@ -293,6 +316,7 @@ fun WatchScreen(
 
     val playerSurfaceBlock: @Composable (Modifier) -> Unit = { boxModifier ->
         Box(
+            contentAlignment = Alignment.Center,
             modifier = boxModifier
                 .graphicsLayer {
                     translationY = dragOffsetY
@@ -336,12 +360,18 @@ fun WatchScreen(
                 }
         ) {
             val presentationState = rememberPresentationState(player)
+            val activeContentScale = if (isFullscreen && isFullscreenZoomFill) {
+                ContentScale.Crop
+            } else {
+                ContentScale.Fit
+            }
             PlayerSurface(
                 player = player,
                 surfaceType = SURFACE_TYPE_TEXTURE_VIEW,
                 modifier = Modifier
                     .fillMaxSize()
-                    .resizeWithContentScale(ContentScale.Fit, presentationState.videoSizeDp)
+                    .clip(RoundedCornerShape(0.dp))
+                    .resizeWithContentScale(activeContentScale, presentationState.videoSizeDp)
             )
             if (presentationState.coverSurface) {
                 Box(Modifier.fillMaxSize()) {
@@ -439,6 +469,36 @@ fun WatchScreen(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
+                                if (isFullscreen) {
+                                    Surface(
+                                        shape = RoundedCornerShape(50),
+                                        color = if (isFullscreenZoomFill) MaterialTheme.colorScheme.primary
+                                        else Color.Black.copy(alpha = 0.58f),
+                                        modifier = Modifier
+                                            .clickable { isFullscreenZoomFill = !isFullscreenZoomFill }
+                                            .testTag("player_fullscreen_fit_toggle")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.AspectRatio,
+                                                contentDescription = "Toggle Fill or Fit",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = if (isFullscreenZoomFill) "Fill" else "Fit",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = Color.White,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    }
+                                }
+
                                 // Speed Selector Button Inside Player
                                 Surface(
                                     shape = RoundedCornerShape(50),

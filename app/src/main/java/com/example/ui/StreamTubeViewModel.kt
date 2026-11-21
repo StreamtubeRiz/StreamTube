@@ -1,6 +1,7 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.Context
 import androidx.compose.ui.geometry.Offset
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -24,13 +25,16 @@ import com.example.update.GitHubReleaseInfo
 import com.example.ui.components.FlyingDownloadEvent
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 
 sealed interface UiState<out T> {
     data object Loading : UiState<Nothing>
@@ -61,6 +65,8 @@ class StreamTubeViewModel(application: Application) : AndroidViewModel(applicati
     // 20-video Home feed batching state
     private val _homeFeedState = MutableStateFlow<UiState<List<MediaItem>>>(UiState.Loading)
     val homeFeedState: StateFlow<UiState<List<MediaItem>>> = _homeFeedState.asStateFlow()
+    private val _isRefreshingHome = MutableStateFlow(false)
+    val isRefreshingHome: StateFlow<Boolean> = _isRefreshingHome.asStateFlow()
     private val _isLoadingMoreHome = MutableStateFlow(false)
     val isLoadingMoreHome: StateFlow<Boolean> = _isLoadingMoreHome.asStateFlow()
     private var homeBatchIndex = 0
@@ -76,14 +82,22 @@ class StreamTubeViewModel(application: Application) : AndroidViewModel(applicati
     private val _featuredChannelsState = MutableStateFlow<UiState<List<ChannelInfo>>>(UiState.Loading)
     val featuredChannelsState: StateFlow<UiState<List<ChannelInfo>>> = _featuredChannelsState.asStateFlow()
 
-    private val _channelDetailState = MutableStateFlow<UiState<ChannelInfo>>(UiState.Loading)
-    val channelDetailState: StateFlow<UiState<ChannelInfo>> = _channelDetailState.asStateFlow()
-
     private val _searchFilter = MutableStateFlow(SearchFilter.VIDEOS)
     val searchFilter: StateFlow<SearchFilter> = _searchFilter.asStateFlow()
 
+    private val _channelDetailState = MutableStateFlow<UiState<ChannelInfo>>(UiState.Loading)
+    val channelDetailState: StateFlow<UiState<ChannelInfo>> = _channelDetailState.asStateFlow()
+
     private val _searchState = MutableStateFlow<UiState<SearchResultBundle>?>(null)
     val searchState: StateFlow<UiState<SearchResultBundle>?> = _searchState.asStateFlow()
+
+    private val searchPrefs = app.getSharedPreferences("streamtube_search_prefs", Context.MODE_PRIVATE)
+    private val _recentSearches = MutableStateFlow(loadRecentSearchesFromPrefs())
+    val recentSearches: StateFlow<List<String>> = _recentSearches.asStateFlow()
+
+    private val _searchSuggestions = MutableStateFlow<List<String>>(emptyList())
+    val searchSuggestions: StateFlow<List<String>> = _searchSuggestions.asStateFlow()
+    private var suggestionJob: Job? = null
 
     private val _shortsSearchQuery = MutableStateFlow<String?>(null)
     val shortsSearchQuery: StateFlow<String?> = _shortsSearchQuery.asStateFlow()
@@ -147,9 +161,14 @@ class StreamTubeViewModel(application: Application) : AndroidViewModel(applicati
         seamlessPlayerManager.onRequestReExtract = { videoId, resumePositionMs ->
             reExtractAndResume(videoId, resumePositionMs)
         }
+        // Prioritize Home feed immediately on startup; defer non-critical background fetches slightly
         loadHomeFeed(FeedCategory.HOME)
-        loadInitialShortsBatch()
-        loadFeaturedChannels()
+        viewModelScope.launch {
+            delay(350L)
+            loadInitialShortsBatch()
+            delay(850L)
+            loadFeaturedChannels()
+        }
         updateManager.checkForUpdates(notifyUserIfAvailable = true)
     }
 
@@ -189,9 +208,19 @@ class StreamTubeViewModel(application: Application) : AndroidViewModel(applicati
         loadHomeFeed(category, forceRefresh = true)
     }
 
-    fun loadHomeFeed(category: FeedCategory = _selectedCategory.value, forceRefresh: Boolean = false) {
+    fun refreshHomeFeed() {
+        loadHomeFeed(category = _selectedCategory.value, forceRefresh = true, isPullRefresh = true)
+    }
+
+    fun loadHomeFeed(
+        category: FeedCategory = _selectedCategory.value,
+        forceRefresh: Boolean = false,
+        isPullRefresh: Boolean = false
+    ) {
         viewModelScope.launch {
-            if (forceRefresh || _homeFeedState.value !is UiState.Success) {
+            if (isPullRefresh && _homeFeedState.value is UiState.Success) {
+                _isRefreshingHome.value = true
+            } else if (forceRefresh || _homeFeedState.value !is UiState.Success) {
                 _homeFeedState.value = UiState.Loading
             }
             homeBatchIndex = 0
@@ -207,11 +236,15 @@ class StreamTubeViewModel(application: Application) : AndroidViewModel(applicati
                 homeContinuationToken = group.continuationToken
                 if (group.items.isNotEmpty()) {
                     _homeFeedState.value = UiState.Success(group.items)
-                } else {
+                } else if (!isPullRefresh || _homeFeedState.value !is UiState.Success) {
                     _homeFeedState.value = UiState.Error("No videos returned. Tap Retry to reload.")
                 }
             } catch (e: Exception) {
-                _homeFeedState.value = UiState.Error(e.message ?: "Unable to connect to feed.")
+                if (!isPullRefresh || _homeFeedState.value !is UiState.Success) {
+                    _homeFeedState.value = UiState.Error(e.message ?: "Unable to connect to feed.")
+                }
+            } finally {
+                _isRefreshingHome.value = false
             }
         }
     }
@@ -489,6 +522,60 @@ class StreamTubeViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun onSearchQueryChanged(query: String) {
+        suggestionJob?.cancel()
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) {
+            _searchSuggestions.value = emptyList()
+            return
+        }
+        suggestionJob = viewModelScope.launch {
+            delay(200L)
+            val live = runCatching { repository.getSearchSuggestions(trimmed) }
+                .getOrDefault(emptyList())
+            _searchSuggestions.value = live
+        }
+    }
+
+    fun removeRecentSearch(query: String) {
+        val updated = _recentSearches.value.filterNot { it.equals(query, ignoreCase = true) }
+        _recentSearches.value = updated
+        saveRecentSearchesToPrefs(updated)
+    }
+
+    fun clearRecentSearches() {
+        _recentSearches.value = emptyList()
+        saveRecentSearchesToPrefs(emptyList())
+    }
+
+    private fun recordRecentSearch(query: String) {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) return
+        val updated = (listOf(trimmed) + _recentSearches.value.filterNot { it.equals(trimmed, ignoreCase = true) })
+            .take(20)
+        _recentSearches.value = updated
+        saveRecentSearchesToPrefs(updated)
+    }
+
+    private fun loadRecentSearchesFromPrefs(): List<String> {
+        val raw = searchPrefs.getString(KEY_RECENT_SEARCHES, "").orEmpty()
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val v = arr.optString(i).trim()
+                    if (v.isNotBlank()) add(v)
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun saveRecentSearchesToPrefs(items: List<String>) {
+        val arr = JSONArray().apply { items.forEach { put(it) } }
+        searchPrefs.edit().putString(KEY_RECENT_SEARCHES, arr.toString()).apply()
+    }
+
     fun selectSearchFilter(filter: SearchFilter, currentQuery: String) {
         _searchFilter.value = filter
         if (currentQuery.isNotBlank()) {
@@ -497,12 +584,14 @@ class StreamTubeViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun performSearch(query: String, filter: SearchFilter = _searchFilter.value) {
-        if (query.isBlank()) return
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) return
         _searchFilter.value = filter
+        recordRecentSearch(trimmed)
         viewModelScope.launch {
             _searchState.value = UiState.Loading
             try {
-                val bundle = repository.search(query, filter)
+                val bundle = repository.search(trimmed, filter)
                 _searchState.value = UiState.Success(bundle)
             } catch (e: Exception) {
                 _searchState.value = UiState.Error(e.message ?: "Search failed.")
@@ -712,5 +801,9 @@ class StreamTubeViewModel(application: Application) : AndroidViewModel(applicati
     override fun onCleared() {
         super.onCleared()
         seamlessPlayerManager.releaseAll()
+    }
+
+    companion object {
+        private const val KEY_RECENT_SEARCHES = "recent_search_queries"
     }
 }

@@ -8,6 +8,7 @@ import com.example.player.DashMpdGenerator
 import com.example.update.AppUpdateManager
 import com.example.youtubeapi.InnertubeClientProfiles
 import com.example.youtubeapi.InnertubeParser
+import com.example.youtubeapi.YouTubeMediaService
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -418,5 +419,16 @@ class InnertubeParserTest {
         val nextRelease = AppUpdateManager.evaluateReleaseForBanner("2.4", "2.2", "2.3")
         assertTrue(nextRelease.isUpdateAvailable)
         assertTrue(nextRelease.shouldShowBanner)
+    }
+
+    @Test
+    fun `parses youtube autocomplete suggest JSON cleanly without duplicates`() {
+        val raw = """["cid",["cid","cid full episode","cid new episode 2026","cid","cid comedy"]]"""
+        val suggestions = YouTubeMediaService.parseSearchSuggestJson(raw)
+        assertEquals(
+            listOf("cid", "cid full episode", "cid new episode 2026", "cid comedy"),
+            suggestions
+        )
+        assertTrue(YouTubeMediaService.parseSearchSuggestJson("").isEmpty())
     }
 }

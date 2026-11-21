@@ -30,11 +30,13 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -52,11 +54,14 @@ import com.example.mediaserviceinterfaces.MediaItem
 import com.example.ui.UiState
 import com.example.ui.components.VideoCard
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     selectedCategory: FeedCategory,
     feedState: UiState<List<MediaItem>>,
+    isRefreshing: Boolean,
     isLoadingMore: Boolean,
+    scrollToTopTrigger: Int,
     onSelectCategory: (FeedCategory) -> Unit,
     onRefresh: () -> Unit,
     onLoadNextBatch: () -> Unit,
@@ -99,112 +104,126 @@ fun HomeScreen(
             }
         }
 
-        when (feedState) {
-            is UiState.Loading -> {
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 310.dp),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 100.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    items(6) {
-                        VideoCardSkeleton()
-                    }
-                }
-            }
-
-            is UiState.Error -> {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(32.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            imageVector = Icons.Rounded.WifiOff,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(56.dp)
-                        )
-                        Spacer(modifier = Modifier.height(14.dp))
-                        Text(
-                            text = "Stream Feed Interrupted",
-                            style = MaterialTheme.typography.headlineSmall
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = feedState.message,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(18.dp))
-                        Button(
-                            onClick = onRefresh,
-                            modifier = Modifier.testTag("home_retry_button")
-                        ) {
-                            Icon(Icons.Rounded.Refresh, contentDescription = null)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Retry Feed")
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = onRefresh,
+            modifier = Modifier
+                .fillMaxSize()
+                .weight(1f)
+        ) {
+            when (feedState) {
+                is UiState.Loading -> {
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 310.dp),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 100.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        items(6) {
+                            VideoCardSkeleton()
                         }
                     }
                 }
-            }
 
-            is UiState.Success -> {
-                val items = feedState.data
-                val gridState = rememberLazyGridState()
-
-                // Auto-trigger next 20-video batch when user reaches ~15th item of current batch
-                val shouldLoadMore by remember(items.size) {
-                    derivedStateOf {
-                        val lastVisible = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-                        items.isNotEmpty() && lastVisible >= (items.size - 6).coerceAtLeast(13)
-                    }
-                }
-
-                LaunchedEffect(shouldLoadMore) {
-                    if (shouldLoadMore) {
-                        onLoadNextBatch()
-                    }
-                }
-
-                LazyVerticalGrid(
-                    state = gridState,
-                    columns = GridCells.Adaptive(minSize = 310.dp),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 100.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .testTag("home_video_grid")
-                ) {
-                    items(
-                        items = items,
-                        key = { it.id }
-                    ) { video ->
-                        VideoCard(
-                            item = video,
-                            onVideoClick = onVideoClick,
-                            onChannelClick = onChannelClick,
-                            downloadEntity = downloadsByVideoId[video.id],
-                            onRetryDownload = onRetryDownload
-                        )
-                    }
-
-                    if (isLoadingMore) {
-                        item(span = { GridItemSpan(maxLineSpan) }) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 16.dp),
-                                contentAlignment = Alignment.Center
+                is UiState.Error -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                imageVector = Icons.Rounded.WifiOff,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(56.dp)
+                            )
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Text(
+                                text = "Stream Feed Interrupted",
+                                style = MaterialTheme.typography.headlineSmall
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = feedState.message,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(18.dp))
+                            Button(
+                                onClick = onRefresh,
+                                modifier = Modifier.testTag("home_retry_button")
                             ) {
-                                CircularProgressIndicator(
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(28.dp)
-                                )
+                                Icon(Icons.Rounded.Refresh, contentDescription = null)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Retry Feed")
+                            }
+                        }
+                    }
+                }
+
+                is UiState.Success -> {
+                    val items = feedState.data
+                    val gridState = rememberLazyGridState()
+
+                    LaunchedEffect(scrollToTopTrigger) {
+                        if (scrollToTopTrigger > 0) {
+                            gridState.animateScrollToItem(0)
+                        }
+                    }
+
+                    // Auto-trigger next 20-video batch when user reaches ~15th item of current batch
+                    val shouldLoadMore by remember(items.size) {
+                        derivedStateOf {
+                            val lastVisible = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                            items.isNotEmpty() && lastVisible >= (items.size - 6).coerceAtLeast(13)
+                        }
+                    }
+
+                    LaunchedEffect(shouldLoadMore) {
+                        if (shouldLoadMore) {
+                            onLoadNextBatch()
+                        }
+                    }
+
+                    LazyVerticalGrid(
+                        state = gridState,
+                        columns = GridCells.Adaptive(minSize = 310.dp),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 100.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("home_video_grid")
+                    ) {
+                        items(
+                            items = items,
+                            key = { it.id }
+                        ) { video ->
+                            VideoCard(
+                                item = video,
+                                onVideoClick = onVideoClick,
+                                onChannelClick = onChannelClick,
+                                downloadEntity = downloadsByVideoId[video.id],
+                                onRetryDownload = onRetryDownload
+                            )
+                        }
+
+                        if (isLoadingMore) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator(
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                }
                             }
                         }
                     }

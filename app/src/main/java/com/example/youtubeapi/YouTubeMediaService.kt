@@ -238,92 +238,6 @@ class YouTubeMediaService(
             }
         }
 
-        if (category == FeedCategory.HOME) {
-            // Recommended Home: auto-location PK/IN trending + personalized recommendations + fresh rotation
-            coroutineScope {
-                val trendingPrimaryDeferred = async { fetchRealTrendingVideos(preferredRegion) }
-                val complementaryRegion = if (preferredRegion == "PK") "IN" else "PK"
-                val trendingSecondaryDeferred = async {
-                    if (batchIndex == 0) fetchRegionalTrendingSearch(complementaryRegion) else emptyList()
-                }
-                val homeBrowseDeferred = async {
-                    val root = if (batchIndex > 0 && !continuationToken.isNullOrBlank()) {
-                        postInnertube(
-                            endpoint = "browse",
-                            profile = InnertubeClientProfiles.WEB,
-                            payload = JSONObject().apply {
-                                put("context", buildClientContext(InnertubeClientProfiles.WEB))
-                                put("continuation", continuationToken)
-                            }
-                        )
-                    } else if (batchIndex == 0) {
-                        postInnertube(
-                            endpoint = "browse",
-                            profile = InnertubeClientProfiles.WEB,
-                            payload = JSONObject().apply {
-                                put("context", buildClientContext(InnertubeClientProfiles.WEB))
-                                put("browseId", "FEwhat_to_watch")
-                            }
-                        )
-                    } else null
-                    val token = root?.let { InnertubeParser.extractContinuationToken(it) }
-                    val items = root?.let {
-                        InnertubeParser.parseInnertubeVideos(it, forceShort = false)
-                            .filter { item -> isLongFormCandidate(item) }
-                    }.orEmpty()
-                    token to items
-                }
-                val recommendedDeferred = async {
-                    if (batchIndex == 0 && !historyInterestQuery.isNullOrBlank()) {
-                        fetchInnertubeSearch(historyInterestQuery)
-                            .filter { isLongFormCandidate(it) }
-                            .shuffled()
-                            .take(12)
-                    } else emptyList()
-                }
-
-                val (homeToken, homeBrowseItems) = homeBrowseDeferred.await()
-                nextToken = homeToken
-                val recommendedItems = recommendedDeferred.await()
-                val trendingPrimary = if (batchIndex == 0) trendingPrimaryDeferred.await().shuffled() else emptyList()
-                val trendingSecondary = trendingSecondaryDeferred.await().shuffled()
-
-                // Interleave Recommended + PK/IN Regional Trending + Browse for fresh variety
-                val maxLen = maxOf(
-                    recommendedItems.size,
-                    trendingPrimary.size,
-                    trendingSecondary.size,
-                    homeBrowseItems.size
-                )
-                for (i in 0 until maxLen) {
-                    recommendedItems.getOrNull(i)?.let(::addCandidate)
-                    trendingPrimary.getOrNull(i)?.let(::addCandidate)
-                    trendingSecondary.getOrNull(i)?.let(::addCandidate)
-                    homeBrowseItems.getOrNull(i)?.let(::addCandidate)
-                }
-            }
-        } else if (category == FeedCategory.TRENDING) {
-            if (batchIndex == 0) {
-                (fetchRealTrendingVideos(preferredRegion) + fetchRegionalTrendingSearch(if (preferredRegion == "PK") "IN" else "PK"))
-                    .forEach(::addCandidate)
-            } else if (!continuationToken.isNullOrBlank()) {
-                val root = postInnertube(
-                    endpoint = "browse",
-                    profile = InnertubeClientProfiles.WEB,
-                    payload = JSONObject().apply {
-                        put("context", buildClientContext(InnertubeClientProfiles.WEB))
-                        put("continuation", continuationToken)
-                    }
-                )
-                if (root != null) {
-                    nextToken = InnertubeParser.extractContinuationToken(root)
-                    InnertubeParser.parseInnertubeVideos(root, forceShort = false)
-                        .filter { isLongFormCandidate(it) }
-                        .forEach(::addCandidate)
-                }
-            }
-        }
-
         val regionalPrimaryName = if (preferredRegion == "IN") "India" else "Pakistan"
         val regionalSecondaryName = if (preferredRegion == "IN") "Pakistan" else "India"
         val categorySeeds = when (category) {
@@ -354,12 +268,117 @@ class YouTubeMediaService(
 
         val homeCursor = if (category == FeedCategory.HOME) nextHomeSeedCursor(categorySeeds.size) else batchIndex
         val cursor = (homeCursor + batchIndex * 2 + (sessionRandomOffset % categorySeeds.size)) % categorySeeds.size
+
+        if (category == FeedCategory.HOME) {
+            // Fast Recommended Home: parallel Innertube calls only (~400-800ms), fallback mirrors only if sparse
+            coroutineScope {
+                val homeBrowseDeferred = async {
+                    val root = if (batchIndex > 0 && !continuationToken.isNullOrBlank()) {
+                        postInnertube(
+                            endpoint = "browse",
+                            profile = InnertubeClientProfiles.WEB,
+                            payload = JSONObject().apply {
+                                put("context", buildClientContext(InnertubeClientProfiles.WEB))
+                                put("continuation", continuationToken)
+                            }
+                        )
+                    } else if (batchIndex == 0) {
+                        postInnertube(
+                            endpoint = "browse",
+                            profile = InnertubeClientProfiles.WEB,
+                            payload = JSONObject().apply {
+                                put("context", buildClientContext(InnertubeClientProfiles.WEB))
+                                put("browseId", "FEwhat_to_watch")
+                            }
+                        )
+                    } else null
+                    val token = root?.let { InnertubeParser.extractContinuationToken(it) }
+                    val items = root?.let {
+                        InnertubeParser.parseInnertubeVideos(it, forceShort = false)
+                            .filter { item -> isLongFormCandidate(item) }
+                    }.orEmpty()
+                    token to items
+                }
+                val primaryRegionalDeferred = async {
+                    if (batchIndex == 0) {
+                        fetchInnertubeSearch("$regionalPrimaryName trending videos today")
+                            .filter { isLongFormCandidate(it) }
+                            .shuffled()
+                    } else emptyList()
+                }
+                val rotatedTopicDeferred = async {
+                    val seedQuery = categorySeeds[cursor]
+                    fetchInnertubeSearch(seedQuery)
+                        .filter { isLongFormCandidate(it) }
+                        .shuffled()
+                }
+                val recommendedDeferred = async {
+                    if (batchIndex == 0 && !historyInterestQuery.isNullOrBlank()) {
+                        fetchInnertubeSearch(historyInterestQuery)
+                            .filter { isLongFormCandidate(it) }
+                            .shuffled()
+                            .take(12)
+                    } else emptyList()
+                }
+
+                val (homeToken, homeBrowseItems) = homeBrowseDeferred.await()
+                nextToken = homeToken
+                val recommendedItems = recommendedDeferred.await()
+                val trendingPrimary = primaryRegionalDeferred.await()
+                val rotatedItems = rotatedTopicDeferred.await()
+
+                val maxLen = maxOf(
+                    recommendedItems.size,
+                    trendingPrimary.size,
+                    rotatedItems.size,
+                    homeBrowseItems.size
+                )
+                for (i in 0 until maxLen) {
+                    recommendedItems.getOrNull(i)?.let(::addCandidate)
+                    trendingPrimary.getOrNull(i)?.let(::addCandidate)
+                    rotatedItems.getOrNull(i)?.let(::addCandidate)
+                    homeBrowseItems.getOrNull(i)?.let(::addCandidate)
+                }
+            }
+
+            // Only hit slower Kiosk/Piped/Invidious fallback if parallel Innertube returned < 10 items
+            if (freshPool.size < 10) {
+                fetchRealTrendingVideos(preferredRegion).forEach(::addCandidate)
+            }
+        } else if (category == FeedCategory.TRENDING) {
+            if (batchIndex == 0) {
+                (fetchInnertubeSearch("$regionalPrimaryName trending videos today") +
+                    fetchInnertubeSearch("$regionalSecondaryName viral trending today"))
+                    .filter { isLongFormCandidate(it) }
+                    .ifEmpty { fetchRealTrendingVideos(preferredRegion) }
+                    .forEach(::addCandidate)
+            } else if (!continuationToken.isNullOrBlank()) {
+                val root = postInnertube(
+                    endpoint = "browse",
+                    profile = InnertubeClientProfiles.WEB,
+                    payload = JSONObject().apply {
+                        put("context", buildClientContext(InnertubeClientProfiles.WEB))
+                        put("continuation", continuationToken)
+                    }
+                )
+                if (root != null) {
+                    nextToken = InnertubeParser.extractContinuationToken(root)
+                    InnertubeParser.parseInnertubeVideos(root, forceShort = false)
+                        .filter { isLongFormCandidate(it) }
+                        .forEach(::addCandidate)
+                }
+            }
+        }
+
         var attempts = 0
-        while (freshPool.size < batchSize && attempts < 4) {
-            val seedQuery = categorySeeds[(cursor + attempts * 3) % categorySeeds.size]
+        val startOffset = if (category == FeedCategory.HOME) 1 else 0
+        while (freshPool.size < batchSize && attempts < 2) {
+            val seedQuery = categorySeeds[(cursor + startOffset + attempts * 3) % categorySeeds.size]
             val fetched = fetchInnertubeSearch(seedQuery)
-                .ifEmpty { fetchPipedTrending(preferredRegion) }
-                .ifEmpty { fetchInvidiousTrending() }
+                .let { list ->
+                    if (list.isNotEmpty() || freshPool.size >= 8) list
+                    else fetchPipedTrending(preferredRegion).ifEmpty { fetchInvidiousTrending() }
+                }
                 .filter { isLongFormCandidate(it) }
                 .shuffled()
             fetched.forEach { item ->
@@ -389,7 +408,8 @@ class YouTubeMediaService(
 
     private fun fetchRegionalTrendingSearch(regionCode: String): List<MediaItem> {
         val q = if (regionCode == "PK") "Pakistan viral trending today" else "India viral trending today"
-        return (fetchInnertubeSearch(q) + fetchPipedTrending(regionCode))
+        return fetchInnertubeSearch(q)
+            .ifEmpty { fetchPipedTrending(regionCode) }
             .filter { isLongFormCandidate(it) }
     }
 
@@ -754,6 +774,42 @@ class YouTubeMediaService(
                 else pipedVideos.filter { it.isShort || filter == SearchFilter.SHORTS }
             )
         }
+    }
+
+    override suspend fun getSearchSuggestions(query: String): List<String> = withContext(Dispatchers.IO) {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) return@withContext emptyList()
+
+        // 1) Official YouTube/Google Suggest endpoint (ultra-fast ~80ms)
+        val encoded = java.net.URLEncoder.encode(trimmed, "UTF-8")
+        val url = "https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&hl=en&gl=$preferredRegion&q=$encoded"
+        val req = Request.Builder()
+            .url(url)
+            .header("User-Agent", InnertubeClientProfiles.WEB.userAgent)
+            .build()
+
+        val fromSuggestApi = runCatching {
+            networkStack.okHttpClient.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    parseSearchSuggestJson(resp.body?.string().orEmpty())
+                } else emptyList()
+            }
+        }.getOrDefault(emptyList())
+
+        if (fromSuggestApi.isNotEmpty()) {
+            return@withContext fromSuggestApi
+        }
+
+        // 2) NewPipeExtractor SuggestionExtractor fallback
+        return@withContext runCatching {
+            NewPipeDownloaderImpl.ensureInitialized(networkStack.okHttpClient)
+            ServiceList.YouTube.suggestionExtractor.suggestionList(trimmed)
+                .orEmpty()
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinct()
+                .take(10)
+        }.getOrDefault(emptyList())
     }
 
     override suspend fun getChannelInfo(
@@ -1207,5 +1263,19 @@ class YouTubeMediaService(
             "https://invidious.nerdvpn.de",
             "https://yewtu.be"
         )
+
+        fun parseSearchSuggestJson(rawBody: String): List<String> {
+            if (rawBody.isBlank()) return emptyList()
+            return runCatching {
+                val arr = JSONArray(rawBody)
+                val suggestions = arr.optJSONArray(1) ?: return@runCatching emptyList()
+                buildList {
+                    for (i in 0 until suggestions.length()) {
+                        val value = suggestions.optString(i).trim()
+                        if (value.isNotBlank()) add(value)
+                    }
+                }.distinct().take(10)
+            }.getOrDefault(emptyList())
+        }
     }
 }

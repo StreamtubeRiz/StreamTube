@@ -149,16 +149,20 @@ fun StreamTubeRoot(viewModel: StreamTubeViewModel) {
 
     val selectedCategory by viewModel.selectedCategory.collectAsStateWithLifecycle()
     val homeFeedState by viewModel.homeFeedState.collectAsStateWithLifecycle()
+    val isRefreshingHome by viewModel.isRefreshingHome.collectAsStateWithLifecycle()
     val isLoadingMoreHome by viewModel.isLoadingMoreHome.collectAsStateWithLifecycle()
     val shortsState by viewModel.shortsState.collectAsStateWithLifecycle()
     val featuredChannelsState by viewModel.featuredChannelsState.collectAsStateWithLifecycle()
     val channelDetailState by viewModel.channelDetailState.collectAsStateWithLifecycle()
     val searchState by viewModel.searchState.collectAsStateWithLifecycle()
+    val recentSearches by viewModel.recentSearches.collectAsStateWithLifecycle()
+    val searchSuggestions by viewModel.searchSuggestions.collectAsStateWithLifecycle()
     val shortsSearchQuery by viewModel.shortsSearchQuery.collectAsStateWithLifecycle()
     val isSearchingShorts by viewModel.isSearchingShorts.collectAsStateWithLifecycle()
     val searchFilter by viewModel.searchFilter.collectAsStateWithLifecycle()
     val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
     val isUpdateBannerDismissed by viewModel.isUpdateBannerDismissed.collectAsStateWithLifecycle()
+    var homeScrollToTopTrigger by remember { mutableStateOf(0) }
 
     val activeVideo by viewModel.activeVideo.collectAsStateWithLifecycle()
     val activeOfflinePath by viewModel.activeOfflinePath.collectAsStateWithLifecycle()
@@ -279,13 +283,10 @@ fun StreamTubeRoot(viewModel: StreamTubeViewModel) {
     val openChannelHandler: (String, String, String) -> Unit = { channelId, name, avatar ->
         activeChannelRequest = Triple(channelId, name, avatar)
         viewModel.minimizePlayer()
-        isSearchOpen = false
         viewModel.openChannel(channelId, name, avatar)
     }
 
     val openVideoHandler: (MediaItem, String?) -> Unit = { item, offlinePath ->
-        activeChannelRequest = null
-        isSearchOpen = false
         viewModel.openVideo(item, offlinePath)
     }
 
@@ -320,10 +321,15 @@ fun StreamTubeRoot(viewModel: StreamTubeViewModel) {
                     item(
                         selected = currentDestination == dest,
                         onClick = {
+                            val wasAlreadyHome = currentDestination == AppDestination.HOME &&
+                                activeChannelRequest == null && !isSearchOpen
                             activeChannelRequest = null
                             isSearchOpen = false
                             currentDestination = dest
-                            if (dest == AppDestination.SHORTS) {
+                            if (dest == AppDestination.HOME && wasAlreadyHome) {
+                                homeScrollToTopTrigger++
+                                viewModel.refreshHomeFeed()
+                            } else if (dest == AppDestination.SHORTS) {
                                 viewModel.minimizePlayer()
                                 watchPlayer.pause()
                             }
@@ -405,9 +411,11 @@ fun StreamTubeRoot(viewModel: StreamTubeViewModel) {
                         AppDestination.HOME -> HomeScreen(
                             selectedCategory = selectedCategory,
                             feedState = homeFeedState,
+                            isRefreshing = isRefreshingHome,
                             isLoadingMore = isLoadingMoreHome,
+                            scrollToTopTrigger = homeScrollToTopTrigger,
                             onSelectCategory = viewModel::selectCategory,
-                            onRefresh = { viewModel.loadHomeFeed(selectedCategory, forceRefresh = true) },
+                            onRefresh = viewModel::refreshHomeFeed,
                             onLoadNextBatch = viewModel::loadNextHomeBatch,
                             onVideoClick = { item -> openVideoHandler(item, null) },
                             onChannelClick = openChannelHandler,
@@ -476,6 +484,30 @@ fun StreamTubeRoot(viewModel: StreamTubeViewModel) {
         }
 
         AnimatedVisibility(
+            visible = isSearchOpen,
+            enter = slideInVertically { it / 6 },
+            exit = slideOutVertically { it }
+        ) {
+            SearchScreen(
+                searchState = searchState,
+                selectedFilter = searchFilter,
+                recentSearches = recentSearches,
+                searchSuggestions = searchSuggestions,
+                onBack = { isSearchOpen = false },
+                onQueryChange = viewModel::onSearchQueryChanged,
+                onSelectFilter = viewModel::selectSearchFilter,
+                onSearch = viewModel::performSearch,
+                onRemoveRecentSearch = viewModel::removeRecentSearch,
+                onClearRecentSearches = viewModel::clearRecentSearches,
+                onVideoClick = { item -> openVideoHandler(item, null) },
+                onShortClick = openShortHandler,
+                onChannelClick = openChannelHandler,
+                downloadsByVideoId = latestDownloadsByVideoId,
+                onRetryDownload = viewModel::retryDownload
+            )
+        }
+
+        AnimatedVisibility(
             visible = activeChannelRequest != null,
             enter = slideInVertically { it / 6 },
             exit = slideOutVertically { it }
@@ -491,25 +523,6 @@ fun StreamTubeRoot(viewModel: StreamTubeViewModel) {
                 },
                 onToggleSubscribe = viewModel::toggleSubscribe,
                 onVideoClick = { item -> openVideoHandler(item, null) },
-                downloadsByVideoId = latestDownloadsByVideoId,
-                onRetryDownload = viewModel::retryDownload
-            )
-        }
-
-        AnimatedVisibility(
-            visible = isSearchOpen,
-            enter = slideInVertically { it / 6 },
-            exit = slideOutVertically { it }
-        ) {
-            SearchScreen(
-                searchState = searchState,
-                selectedFilter = searchFilter,
-                onBack = { isSearchOpen = false },
-                onSelectFilter = viewModel::selectSearchFilter,
-                onSearch = viewModel::performSearch,
-                onVideoClick = { item -> openVideoHandler(item, null) },
-                onShortClick = openShortHandler,
-                onChannelClick = openChannelHandler,
                 downloadsByVideoId = latestDownloadsByVideoId,
                 onRetryDownload = viewModel::retryDownload
             )

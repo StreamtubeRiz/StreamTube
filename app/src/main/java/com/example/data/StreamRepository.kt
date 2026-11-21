@@ -104,6 +104,11 @@ class StreamRepository(
         return bundle
     }
 
+    suspend fun getSearchSuggestions(query: String): List<String> {
+        if (query.isBlank()) return emptyList()
+        return primaryService.getSearchSuggestions(query)
+    }
+
     fun markShortSeen(videoId: String) {
         primaryService.markShortSeen(videoId)
     }

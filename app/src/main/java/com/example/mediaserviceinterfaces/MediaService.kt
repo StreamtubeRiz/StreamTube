@@ -24,6 +24,8 @@ interface MediaService {
         filter: SearchFilter = SearchFilter.VIDEOS
     ): SearchResultBundle
 
+    suspend fun getSearchSuggestions(query: String): List<String> = emptyList()
+
     fun markShortSeen(videoId: String) {}
 
     fun recordShortInterest(item: MediaItem, weight: Int = 1) {}
