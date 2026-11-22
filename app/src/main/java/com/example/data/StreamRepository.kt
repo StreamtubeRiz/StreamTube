@@ -235,21 +235,31 @@ class StreamRepository(
         }
     }
 
+    private var interestRotationCounter = 0
+
     private suspend fun buildPersonalizedInterestQuery(): String? {
         return try {
             val liked = likedVideoDao?.observeLikedVideos()?.firstOrNull().orEmpty().map { it.title }
             val saved = savedVideoDao?.observeSavedVideos()?.firstOrNull().orEmpty().map { it.title }
             val recent = watchHistoryDao.observeRecentHistory().firstOrNull().orEmpty().map { it.title }
-            val topKeywords = (liked + saved + recent)
-                .take(4)
+            val fillerWords = setOf(
+                "official", "video", "videos", "full", "episode", "latest", "trending",
+                "viral", "shorts", "short", "live", "today", "watch", "review", "new"
+            )
+            val candidateKeywords = (recent.take(6) + liked.take(4) + saved.take(4))
                 .mapNotNull { title ->
-                    title.split(" ")
-                        .firstOrNull { it.length >= 4 && it.all { ch -> ch.isLetter() } }
+                    title.split(Regex("[\\s|\\-:/()\\[\\]]+"))
+                        .firstOrNull { token ->
+                            token.length >= 4 &&
+                                token.all { ch -> ch.isLetter() } &&
+                                !fillerWords.contains(token.lowercase())
+                        }
                 }
-                .distinct()
-            if (topKeywords.isNotEmpty()) {
-                topKeywords.joinToString(" ")
-            } else null
+                .distinctBy { it.lowercase() }
+            if (candidateKeywords.isEmpty()) return null
+            val picked = candidateKeywords[interestRotationCounter % candidateKeywords.size]
+            interestRotationCounter++
+            picked
         } catch (_: Exception) {
             null
         }

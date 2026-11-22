@@ -2,6 +2,7 @@ package com.example
 
 import android.app.Application
 import android.util.Log
+import com.example.ads.UnityAdsManager
 import com.example.data.StreamRepository
 import com.example.data.local.AppDatabase
 import com.example.downloads.MediaDownloadManager
@@ -54,14 +55,20 @@ class StreamTubeApp : Application() {
         AppUpdateManager(this, networkStack.okHttpClient)
     }
 
+    val unityAdsManager: UnityAdsManager by lazy {
+        UnityAdsManager(this)
+    }
+
     override fun onCreate() {
         super.onCreate()
+        unityAdsManager.initialize()
         appScope.launch {
             runCatching {
                 NewPipeDownloaderImpl.ensureInitialized(networkStack.okHttpClient)
             }
+            delay(300L)
             // Delay yt-dlp self-update slightly so immediate playback/downloads are not contended
-            delay(5_000L)
+            delay(4_700L)
             if (ensureYoutubeDlInitialized()) {
                 runCatching {
                     youtubeDlMutex.withLock {

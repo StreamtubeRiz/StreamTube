@@ -88,6 +88,8 @@ class YouTubeMediaService(
         LinkedHashSet(raw.split(",").filter { it.isNotBlank() })
     }
 
+    private val sessionDeliveredHomeIds = java.util.Collections.synchronizedSet(HashSet<String>())
+
     private val shortsAffinityScores: MutableMap<String, Int> by lazy {
         val raw = prefs.getString(KEY_SHORTS_AFFINITY, "").orEmpty()
         val map = linkedMapOf<String, Int>()
@@ -129,6 +131,7 @@ class YouTubeMediaService(
     @Synchronized
     private fun markHomeDelivered(ids: List<String>) {
         if (ids.isEmpty()) return
+        sessionDeliveredHomeIds.addAll(ids)
         ids.forEach { id ->
             seenHomeIds.remove(id)
             seenHomeIds.add(id)
@@ -229,6 +232,10 @@ class YouTubeMediaService(
         val previouslyShownHome = if (category == FeedCategory.HOME) getSeenHomeSnapshot() else emptySet()
         var nextToken: String? = null
 
+        if (category == FeedCategory.HOME && batchIndex == 0) {
+            sessionDeliveredHomeIds.clear()
+        }
+
         fun addCandidate(item: MediaItem) {
             if (!seenInBatch.add(item.id)) return
             if (category == FeedCategory.HOME && previouslyShownHome.contains(item.id)) {
@@ -240,19 +247,23 @@ class YouTubeMediaService(
 
         val regionalPrimaryName = if (preferredRegion == "IN") "India" else "Pakistan"
         val regionalSecondaryName = if (preferredRegion == "IN") "Pakistan" else "India"
+        val entertainmentSeeds = listOf(
+            "Pakistani drama comedy entertainment 2026",
+            "Bollywood latest trending songs official",
+            "desi comedy standup funny show",
+            "street food $regionalPrimaryName vlog",
+            "Coke Studio indie music acoustic"
+        )
+        val discoverySeeds = listOf(
+            "latest tech smartphone review unboxing",
+            "$regionalPrimaryName cricket highlights match",
+            "breaking news $regionalPrimaryName today",
+            "4k travel documentary nature",
+            "top PC mobile gaming walkthrough 2026",
+            "science space explained documentary"
+        )
         val categorySeeds = when (category) {
-            FeedCategory.HOME -> listOf(
-                "$regionalPrimaryName trending videos today",
-                "$regionalSecondaryName viral trending video today",
-                "Pakistani drama comedy entertainment 2026",
-                "Bollywood latest trending songs official",
-                "India Pakistan cricket highlights match",
-                "latest tech smartphone review unboxing",
-                "desi comedy standup funny show",
-                "breaking news $regionalPrimaryName today",
-                "4k travel documentary nature",
-                "street food India Pakistan vlog"
-            )
+            FeedCategory.HOME -> entertainmentSeeds + discoverySeeds
             FeedCategory.TRENDING -> listOf(
                 "$regionalPrimaryName trending videos today",
                 "$regionalSecondaryName viral trending today",
@@ -270,8 +281,11 @@ class YouTubeMediaService(
         val cursor = (homeCursor + batchIndex * 2 + (sessionRandomOffset % categorySeeds.size)) % categorySeeds.size
 
         if (category == FeedCategory.HOME) {
-            // Fast Recommended Home: parallel Innertube calls only (~400-800ms), fallback mirrors only if sparse
-            coroutineScope {
+            val entSeed = entertainmentSeeds[(homeCursor + batchIndex) % entertainmentSeeds.size]
+            val discSeed = discoverySeeds[(homeCursor + batchIndex + 2) % discoverySeeds.size]
+
+            // Fast "All" Home Mix: Recommended + Trending + Diverse Topics + Capped Personalized Taste
+            val mixedAll = coroutineScope {
                 val homeBrowseDeferred = async {
                     val root = if (batchIndex > 0 && !continuationToken.isNullOrBlank()) {
                         postInnertube(
@@ -299,52 +313,74 @@ class YouTubeMediaService(
                     }.orEmpty()
                     token to items
                 }
-                val primaryRegionalDeferred = async {
-                    if (batchIndex == 0) {
-                        fetchInnertubeSearch("$regionalPrimaryName trending videos today")
-                            .filter { isLongFormCandidate(it) }
-                            .shuffled()
-                    } else emptyList()
+                val trendingDeferred = async {
+                    val primaryTrending = fetchInnertubeSearch("$regionalPrimaryName trending videos today")
+                        .filter { isLongFormCandidate(it) }
+                        .shuffled()
+                    if (primaryTrending.size >= 8) primaryTrending
+                    else (primaryTrending + fetchRealTrendingVideos(preferredRegion)).distinctBy { it.id }
                 }
-                val rotatedTopicDeferred = async {
-                    val seedQuery = categorySeeds[cursor]
-                    fetchInnertubeSearch(seedQuery)
+                val entertainmentDeferred = async {
+                    fetchInnertubeSearch(entSeed)
                         .filter { isLongFormCandidate(it) }
                         .shuffled()
                 }
-                val recommendedDeferred = async {
+                val discoveryDeferred = async {
+                    fetchInnertubeSearch(discSeed)
+                        .filter { isLongFormCandidate(it) }
+                        .shuffled()
+                }
+                val personalizedDeferred = async {
                     if (batchIndex == 0 && !historyInterestQuery.isNullOrBlank()) {
+                        // Cap personalized slot to 3 diverse items so 1 recent search never takes over All
                         fetchInnertubeSearch(historyInterestQuery)
                             .filter { isLongFormCandidate(it) }
                             .shuffled()
-                            .take(12)
+                            .distinctBy { it.channelId.ifBlank { it.channelName } }
+                            .take(3)
                     } else emptyList()
                 }
 
                 val (homeToken, homeBrowseItems) = homeBrowseDeferred.await()
                 nextToken = homeToken
-                val recommendedItems = recommendedDeferred.await()
-                val trendingPrimary = primaryRegionalDeferred.await()
-                val rotatedItems = rotatedTopicDeferred.await()
+                val trendingItems = trendingDeferred.await()
+                val entItems = entertainmentDeferred.await()
+                val discItems = discoveryDeferred.await()
+                val personalizedItems = personalizedDeferred.await()
 
-                val maxLen = maxOf(
-                    recommendedItems.size,
-                    trendingPrimary.size,
-                    rotatedItems.size,
-                    homeBrowseItems.size
+                val extraFallback = if ((homeBrowseItems.size + trendingItems.size + entItems.size + discItems.size) < batchSize) {
+                    val extraSeed = categorySeeds[(cursor + 5) % categorySeeds.size]
+                    fetchInnertubeSearch(extraSeed)
+                        .filter { isLongFormCandidate(it) }
+                        .shuffled()
+                } else emptyList()
+
+                HomeFeedMixer.mixAndDiversify(
+                    buckets = listOf(
+                        homeBrowseItems,
+                        trendingItems,
+                        entItems,
+                        discItems,
+                        personalizedItems,
+                        extraFallback
+                    ),
+                    targetSize = batchSize,
+                    sessionShownIds = sessionDeliveredHomeIds.toHashSet(),
+                    persistentShownIds = previouslyShownHome
                 )
-                for (i in 0 until maxLen) {
-                    recommendedItems.getOrNull(i)?.let(::addCandidate)
-                    trendingPrimary.getOrNull(i)?.let(::addCandidate)
-                    rotatedItems.getOrNull(i)?.let(::addCandidate)
-                    homeBrowseItems.getOrNull(i)?.let(::addCandidate)
-                }
             }
 
-            // Only hit slower Kiosk/Piped/Invidious fallback if parallel Innertube returned < 10 items
-            if (freshPool.size < 10) {
-                fetchRealTrendingVideos(preferredRegion).forEach(::addCandidate)
+            if (mixedAll.isNotEmpty()) {
+                markHomeDelivered(mixedAll.map { it.id })
             }
+
+            return@withContext MediaGroup(
+                id = "home_all_batch_${batchIndex}_${System.currentTimeMillis()}",
+                title = category.label,
+                category = category,
+                items = mixedAll,
+                continuationToken = nextToken
+            )
         } else if (category == FeedCategory.TRENDING) {
             if (batchIndex == 0) {
                 (fetchInnertubeSearch("$regionalPrimaryName trending videos today") +
@@ -371,9 +407,8 @@ class YouTubeMediaService(
         }
 
         var attempts = 0
-        val startOffset = if (category == FeedCategory.HOME) 1 else 0
         while (freshPool.size < batchSize && attempts < 2) {
-            val seedQuery = categorySeeds[(cursor + startOffset + attempts * 3) % categorySeeds.size]
+            val seedQuery = categorySeeds[(cursor + attempts * 3) % categorySeeds.size]
             val fetched = fetchInnertubeSearch(seedQuery)
                 .let { list ->
                     if (list.isNotEmpty() || freshPool.size >= 8) list
@@ -387,15 +422,10 @@ class YouTubeMediaService(
             attempts++
         }
 
-        val combined = if (freshPool.size >= batchSize) {
-            freshPool.take(batchSize)
-        } else {
-            (freshPool + fallbackPool.shuffled()).take(batchSize)
-        }
-
-        if (category == FeedCategory.HOME && combined.isNotEmpty()) {
-            markHomeDelivered(combined.map { it.id })
-        }
+        val combined = HomeFeedMixer.mixAndDiversify(
+            buckets = listOf(freshPool, fallbackPool.shuffled()),
+            targetSize = batchSize
+        )
 
         MediaGroup(
             id = "home_${category.name.lowercase()}_batch_${batchIndex}_${System.currentTimeMillis()}",

@@ -200,6 +200,7 @@ fun WatchScreen(
     val context = LocalContext.current
     val view = LocalView.current
     val activity = remember(context) { context.findActivity() }
+    val displayRelatedVideos = remember(relatedVideos) { relatedVideos.take(10) }
 
     // True Landscape Fullscreen + Display Cutout Short Edges + Immersive Status/Nav Bar Auto-Hide
     DisposableEffect(isFullscreen, activity) {
@@ -300,7 +301,9 @@ fun WatchScreen(
     }
 
     LifecycleStartEffect(player) {
-        if (isPlaying) player.play()
+        if (isPlaying) {
+            player.play()
+        }
         onStopOrDispose {
             player.pause()
         }
@@ -822,7 +825,7 @@ fun WatchScreen(
                                 RelatedShimmerCard()
                             }
                         } else {
-                            items(relatedVideos.take(10), key = { it.id }) { related ->
+                            items(displayRelatedVideos, key = { it.id }) { related ->
                                 val isSwitchingToThis = selectedRelatedId == related.id
                                 val itemScale by animateFloatAsState(
                                     targetValue = if (isSwitchingToThis) 0.96f else 1f,
@@ -906,7 +909,7 @@ fun WatchScreen(
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                                 )
                             }
-                            items(relatedVideos.take(10), key = { it.id }) { related ->
+                            items(displayRelatedVideos, key = { it.id }) { related ->
                                 val isSwitchingToThis = selectedRelatedId == related.id
                                 val itemScale by animateFloatAsState(
                                     targetValue = if (isSwitchingToThis) 0.96f else 1f,

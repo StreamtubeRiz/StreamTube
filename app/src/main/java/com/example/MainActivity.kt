@@ -1,6 +1,9 @@
 package com.example
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -126,6 +129,12 @@ enum class AppDestination(
     DOWNLOADS("Downloads", Icons.Rounded.Download, Icons.Outlined.Download, "nav_downloads")
 }
 
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
 class MainActivity : ComponentActivity() {
     private val viewModel: StreamTubeViewModel by viewModels()
 
@@ -177,6 +186,7 @@ fun StreamTubeRoot(viewModel: StreamTubeViewModel) {
 
     val downloadSheetItem by viewModel.downloadSheetItem.collectAsStateWithLifecycle()
     val downloadSheetFormatState by viewModel.downloadSheetFormatState.collectAsStateWithLifecycle()
+    val rewardedLoadingFormatItag by viewModel.rewardedLoadingFormatItag.collectAsStateWithLifecycle()
     val flyingDownloadEvent by viewModel.flyingDownloadEvent.collectAsStateWithLifecycle()
     val downloads by viewModel.downloads.collectAsStateWithLifecycle()
     val subscriptions by viewModel.subscriptions.collectAsStateWithLifecycle()
@@ -185,6 +195,7 @@ fun StreamTubeRoot(viewModel: StreamTubeViewModel) {
     val toastMessage by viewModel.toastMessage.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     var downloadsIconTargetOffset by remember { mutableStateOf(Offset(850f, 1950f)) }
@@ -209,6 +220,16 @@ fun StreamTubeRoot(viewModel: StreamTubeViewModel) {
         if (showSplash) {
             delay(2500L)
             showSplash = false
+        }
+    }
+
+    LaunchedEffect(showSplash) {
+        if (!showSplash) {
+            viewModel.unityAdsManager.awaitAndShowLaunchInterstitial(
+                activity = activity,
+                maxWaitMs = 5_500L,
+                canStillShow = { activeVideo == null && currentDestination == AppDestination.HOME }
+            )
         }
     }
 
@@ -436,7 +457,14 @@ fun StreamTubeRoot(viewModel: StreamTubeViewModel) {
                             onSearchShorts = viewModel::searchShortsInPlace,
                             onClearShortsSearch = viewModel::clearShortsSearch,
                             onChannelClick = openChannelHandler,
-                            onDownloadClick = viewModel::openDownloadSheet
+                            onDownloadClick = viewModel::openDownloadSheet,
+                            onPreloadInterstitial = { viewModel.unityAdsManager.loadInterstitial() },
+                            onShowTenShortInterstitial = { onFinished ->
+                                viewModel.unityAdsManager.showShortsInterstitial(activity, onFinished)
+                            },
+                            isPlaybackAllowed = activeChannelRequest == null &&
+                                !isSearchOpen &&
+                                !(activeVideo != null && isWatchExpanded)
                         )
 
                         AppDestination.CHANNELS -> ChannelsHubScreen(
@@ -575,8 +603,11 @@ fun StreamTubeRoot(viewModel: StreamTubeViewModel) {
                 item = sheetTarget,
                 formatState = downloadSheetFormatState,
                 onRetry = { viewModel.openDownloadSheet(sheetTarget) },
-                onSelectFormat = { format -> viewModel.startOneClickDownload(sheetTarget, format) },
-                onDismiss = viewModel::dismissDownloadSheet
+                onSelectFormat = { format ->
+                    viewModel.handleFormatDownloadClick(activity, sheetTarget, format)
+                },
+                onDismiss = viewModel::dismissDownloadSheet,
+                rewardedLoadingFormatItag = rewardedLoadingFormatItag
             )
         }
 

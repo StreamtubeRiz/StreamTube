@@ -385,8 +385,8 @@ class InnertubeParserTest {
     }
 
     @Test
-    fun `home category defaults to Recommended and innertube context applies regional gl`() {
-        assertEquals("Recommended", FeedCategory.HOME.label)
+    fun `home category defaults to All and innertube context applies regional gl`() {
+        assertEquals("All", FeedCategory.HOME.label)
         assertEquals("PK", InnertubeClientProfiles.WEB.toClientContextJson("PK").optString("gl"))
         assertEquals("IN", InnertubeClientProfiles.ANDROID_VR.toClientContextJson("IN").optString("gl"))
     }

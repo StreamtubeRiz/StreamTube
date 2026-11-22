@@ -16,8 +16,8 @@ android {
     applicationId = "com.rizmedia.streamtube"
     minSdk = 24
     targetSdk = 36
-    versionCode = 4
-    versionName = "2.3"
+    versionCode = 6
+    versionName = "5.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     ndk {
@@ -148,6 +148,7 @@ dependencies {
   coreLibraryDesugaring(libs.desugar.jdk.libs.nio)
   implementation(libs.newpipe.extractor)
   implementation(libs.youtubedl.library)
+  implementation(libs.unity.ads)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)

@@ -34,7 +34,7 @@ data class MediaItem(
 }
 
 enum class FeedCategory(val label: String, val queryOrBrowseId: String) {
-    HOME("Recommended", "FEwhat_to_watch"),
+    HOME("All", "FEwhat_to_watch"),
     TRENDING("Trending", "FEtrending"),
     MUSIC("Music", "music"),
     GAMING("Gaming", "gaming"),

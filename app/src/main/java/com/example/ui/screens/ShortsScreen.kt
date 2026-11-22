@@ -88,6 +88,7 @@ import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import com.example.ads.AdPlacementHelper
 import com.example.mediaserviceinterfaces.MediaItem
 import com.example.mediaserviceinterfaces.MediaItemFormatInfo
 import com.example.player.StreamPlayerEngine
@@ -122,7 +123,10 @@ fun ShortsScreen(
     onClearShortsSearch: () -> Unit,
     onChannelClick: (channelId: String, name: String, avatar: String) -> Unit,
     onDownloadClick: (MediaItem, Offset) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onPreloadInterstitial: () -> Unit = {},
+    onShowTenShortInterstitial: ((onFinished: () -> Unit) -> Unit) = { onFinished -> onFinished() },
+    isPlaybackAllowed: Boolean = true
 ) {
     var showInlineSearchBar by rememberSaveable { mutableStateOf(false) }
     var shortsQuery by rememberSaveable { mutableStateOf("") }
@@ -190,6 +194,9 @@ fun ShortsScreen(
                 var activeCandidates by remember { mutableStateOf<List<MediaSource>>(emptyList()) }
                 var candidateIndex by remember { mutableIntStateOf(0) }
                 var activeShortId by remember { mutableStateOf("") }
+                var isInterstitialShowing by remember { mutableStateOf(false) }
+                val viewedShortIds = remember { LinkedHashSet<String>() }
+                val triggeredMilestones = remember { mutableSetOf<Int>() }
 
                 // When an inline search swaps the feed, jump straight to page 0 in the same container
                 LaunchedEffect(activeSearchQuery, shorts.firstOrNull()?.id) {
@@ -273,20 +280,35 @@ fun ShortsScreen(
                     }
                 }
 
-                LifecycleStartEffect(player) {
-                    if (!isPaused && !useWebEmbedFallback) player.play()
+                LaunchedEffect(isPlaybackAllowed, isInterstitialShowing, player) {
+                    if (!isPlaybackAllowed || isInterstitialShowing) {
+                        player.playWhenReady = false
+                        player.pause()
+                    } else if (!isPaused && !useWebEmbedFallback && activeShortId.isNotBlank()) {
+                        player.playWhenReady = true
+                        player.play()
+                    }
+                }
+
+                LifecycleStartEffect(player, pagerState.currentPage, shorts.size, isPlaybackAllowed, isInterstitialShowing) {
+                    val activeShort = shorts.getOrNull(pagerState.currentPage)
+                    if (isPlaybackAllowed && !isInterstitialShowing && activeShort != null && !isPaused && !useWebEmbedFallback) {
+                        player.play()
+                    } else {
+                        player.pause()
+                    }
                     onStopOrDispose {
                         player.pause()
                     }
                 }
 
                 // 9-second Shorts stall watchdog (alternate candidate -> silent re-extract -> WebEmbed)
-                LaunchedEffect(player, activeShortId) {
+                LaunchedEffect(player, activeShortId, isInterstitialShowing) {
                     var lastPos = -1L
                     var stalledSince = 0L
                     while (true) {
                         delay(500L)
-                        if (isPaused || useWebEmbedFallback || activeShortId.isBlank()) {
+                        if (isPaused || isInterstitialShowing || useWebEmbedFallback || activeShortId.isBlank()) {
                             stalledSince = 0L
                             lastPos = player.currentPosition
                             continue
@@ -303,7 +325,7 @@ fun ShortsScreen(
                                     candidateIndex = next
                                     player.setMediaSource(activeCandidates[next])
                                     player.playbackParameters = PlaybackParameters(playbackSpeed)
-                                    player.playWhenReady = true
+                                    player.playWhenReady = !isInterstitialShowing && isPlaybackAllowed
                                     player.prepare()
                                 } else {
                                     triggerSilentReExtractOrWebEmbed(activeShortId)
@@ -316,10 +338,32 @@ fun ShortsScreen(
                     }
                 }
 
-                val currentShortId = shorts.getOrNull(pagerState.currentPage)?.id.orEmpty()
-                LaunchedEffect(pagerState.currentPage, currentShortId, retryNonce) {
-                    onShortPageChanged(pagerState.currentPage)
+                val currentShortIdKey = shorts.getOrNull(pagerState.currentPage)?.id.orEmpty()
+                LaunchedEffect(pagerState.currentPage, currentShortIdKey, retryNonce) {
                     val current = shorts.getOrNull(pagerState.currentPage) ?: return@LaunchedEffect
+                    onShortPageChanged(pagerState.currentPage)
+
+                    val isNewDistinctShort = !viewedShortIds.contains(current.id)
+                    if (isNewDistinctShort) {
+                        val milestone = AdPlacementHelper.milestoneForShortsInterstitial(
+                            completedShortsCount = viewedShortIds.size,
+                            alreadyTriggeredMilestones = triggeredMilestones
+                        )
+                        viewedShortIds.add(current.id)
+                        if (viewedShortIds.size % AdPlacementHelper.SHORTS_INTERSTITIAL_INTERVAL >= 7) {
+                            onPreloadInterstitial()
+                        }
+                        if (milestone != null) {
+                            triggeredMilestones.add(milestone)
+                            isInterstitialShowing = true
+                            player.playWhenReady = false
+                            player.pause()
+                            onShowTenShortInterstitial {
+                                isInterstitialShowing = false
+                            }
+                        }
+                    }
+
                     activeShortId = current.id
                     playerEngine.activePlaybackVideoId = current.id
                     onShortViewed(current.id)
@@ -352,25 +396,25 @@ fun ShortsScreen(
                         candidateIndex = 0
                         player.setMediaSource(resolvedCandidates.first())
                         player.playbackParameters = PlaybackParameters(playbackSpeed)
-                        player.playWhenReady = true
+                        player.playWhenReady = isPlaybackAllowed && !isInterstitialShowing
                         player.prepare()
                     } else {
                         isBuffering = false
                         useWebEmbedFallback = true
                     }
 
-                    // Optimization #1: Also trigger head-byte pre-warm for +1 and +2 Shorts
-                    (1..2).forEach { offset ->
-                        shorts.getOrNull(pagerState.currentPage + offset)?.let { upcoming ->
+                    // Optimization #1: Also trigger head-byte pre-warm for next +1 and +2 Shorts
+                    shorts.drop(pagerState.currentPage + 1)
+                        .take(2)
+                        .forEach { upcoming ->
                             onPreWarmUpcomingShort(upcoming.id)
                         }
-                    }
                 }
 
                 VerticalPager(
                     state = pagerState,
                     beyondViewportPageCount = 1,
-                    key = { page -> shorts[page].id },
+                    key = { page -> "${shorts[page].id}_$page" },
                     modifier = Modifier
                         .fillMaxSize()
                         .testTag("shorts_vertical_pager")
@@ -795,7 +839,7 @@ fun ShortsScreen(
                                 }
                             }
                         }
-                    }
+                        }
                 }
             }
         }

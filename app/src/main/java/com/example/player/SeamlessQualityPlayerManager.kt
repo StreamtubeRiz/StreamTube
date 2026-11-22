@@ -125,6 +125,26 @@ class SeamlessQualityPlayerManager(
         )
     }
 
+    /**
+     * Immediately halts any playing video (active + standby) before resolving/loading a newly clicked video.
+     */
+    fun stopImmediatelyForNewVideo() {
+        cancelPendingSwitch()
+        _switchState.value = QualitySwitchState.Idle
+        isPlayingOffline = false
+        isDashManifestActive = false
+        currentVideoId = ""
+        currentCandidates = emptyList()
+        currentCandidateIndex = 0
+        hasAttemptedReExtract = false
+        _activePlayer.value.apply {
+            playWhenReady = false
+            pause()
+            stop()
+            clearMediaItems()
+        }
+    }
+
     fun switchQualitySeamlessly(
         formatInfo: MediaItemFormatInfo,
         targetQuality: String,

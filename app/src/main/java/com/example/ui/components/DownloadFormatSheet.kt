@@ -22,6 +22,7 @@ import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Hd
 import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -43,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.example.ads.AdPlacementHelper
 import com.example.mediaserviceinterfaces.MediaFormatOption
 import com.example.mediaserviceinterfaces.MediaItem
 import com.example.mediaserviceinterfaces.MediaItemFormatInfo
@@ -50,6 +52,7 @@ import com.example.ui.UiState
 
 /**
  * 1-Click Format Picker Bottom Sheet shown when tapping Download under any video.
+ * 240p/360p/Audio start immediately; 720p/1080p/2K are gated by a Unity Rewarded Ad.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,7 +61,8 @@ fun DownloadFormatSheet(
     formatState: UiState<MediaItemFormatInfo>,
     onRetry: () -> Unit,
     onSelectFormat: (MediaFormatOption) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    rewardedLoadingFormatItag: Int? = null
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -234,6 +238,8 @@ fun DownloadFormatSheet(
                             ) { format ->
                                 FormatOptionRow(
                                     format = format,
+                                    isLoadingAd = rewardedLoadingFormatItag == format.itag,
+                                    isAnyAdLoading = rewardedLoadingFormatItag != null,
                                     onClick = { onSelectFormat(format) }
                                 )
                             }
@@ -248,16 +254,20 @@ fun DownloadFormatSheet(
 @Composable
 private fun FormatOptionRow(
     format: MediaFormatOption,
+    isLoadingAd: Boolean,
+    isAnyAdLoading: Boolean,
     onClick: () -> Unit
 ) {
+    val requiresRewardedAd = AdPlacementHelper.requiresRewardedAdForDownload(format.qualityLabel)
     val typeLabel = when {
+        requiresRewardedAd -> "Watch Ad to Download"
         format.isAudioOnly -> "Audio Only"
         format.isMuxed -> "Video + Audio (Ready)"
-        else -> "High-Res Video"
+        else -> "Standard Video"
     }
     val icon = when {
         format.isAudioOnly -> Icons.Rounded.AudioFile
-        format.qualityLabel.contains("1080") || format.qualityLabel.contains("2160") || format.qualityLabel.contains("1440") -> Icons.Rounded.Hd
+        format.qualityLabel.contains("1080") || format.qualityLabel.contains("2160") || format.qualityLabel.contains("1440") || format.qualityLabel.contains("2K", ignoreCase = true) -> Icons.Rounded.Hd
         else -> Icons.Rounded.Movie
     }
 
@@ -266,13 +276,14 @@ private fun FormatOptionRow(
         color = MaterialTheme.colorScheme.surfaceVariant,
         border = BorderStroke(
             1.dp,
-            if (format.isMuxed) MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+            if (requiresRewardedAd) MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)
+            else if (format.isMuxed) MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
             else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
         ),
         modifier = Modifier
             .fillMaxWidth()
             .minimumInteractiveComponentSize()
-            .clickable(onClick = onClick)
+            .clickable(enabled = !isAnyAdLoading, onClick = onClick)
             .testTag("format_option_${format.itag}")
     ) {
         Row(
@@ -326,31 +337,62 @@ private fun FormatOptionRow(
                 Text(
                     text = "$typeLabel • ${format.formattedSize}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (requiresRewardedAd) MaterialTheme.colorScheme.secondary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             Surface(
                 shape = RoundedCornerShape(50),
-                color = MaterialTheme.colorScheme.primary
+                color = if (requiresRewardedAd) MaterialTheme.colorScheme.secondary
+                else MaterialTheme.colorScheme.primary
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Download,
-                        contentDescription = "Start download ${format.qualityLabel}",
-                        tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "Get",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        fontWeight = FontWeight.Bold
-                    )
+                    if (isLoadingAd) {
+                        CircularProgressIndicator(
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onSecondary,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Loading…",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSecondary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    } else if (requiresRewardedAd) {
+                        Icon(
+                            imageVector = Icons.Rounded.PlayArrow,
+                            contentDescription = "Watch ad to download ${format.qualityLabel}",
+                            tint = MaterialTheme.colorScheme.onSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Watch Ad",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSecondary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Rounded.Download,
+                            contentDescription = "Start download ${format.qualityLabel}",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Get",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }

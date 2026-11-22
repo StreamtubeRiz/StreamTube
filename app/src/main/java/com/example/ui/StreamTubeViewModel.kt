@@ -1,11 +1,13 @@
 package com.example.ui
 
+import android.app.Activity
 import android.app.Application
 import android.content.Context
 import androidx.compose.ui.geometry.Offset
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.StreamTubeApp
+import com.example.ads.AdPlacementHelper
 import com.example.data.local.DownloadedVideoEntity
 import com.example.data.local.LikedVideoEntity
 import com.example.data.local.SavedVideoEntity
@@ -54,6 +56,7 @@ class StreamTubeViewModel(application: Application) : AndroidViewModel(applicati
     private val savedDao = app.database.savedVideoDao()
 
     val playerEngine = app.playerEngine
+    val unityAdsManager = app.unityAdsManager
     val seamlessPlayerManager = SeamlessQualityPlayerManager(playerEngine)
     val qualitySwitchState: StateFlow<QualitySwitchState> = seamlessPlayerManager.switchState
     val appUpdateState: StateFlow<AppUpdateState> = updateManager.updateState
@@ -136,6 +139,9 @@ class StreamTubeViewModel(application: Application) : AndroidViewModel(applicati
     private val _downloadSheetFormatState = MutableStateFlow<UiState<MediaItemFormatInfo>>(UiState.Loading)
     val downloadSheetFormatState: StateFlow<UiState<MediaItemFormatInfo>> = _downloadSheetFormatState.asStateFlow()
 
+    private val _rewardedLoadingFormatItag = MutableStateFlow<Int?>(null)
+    val rewardedLoadingFormatItag: StateFlow<Int?> = _rewardedLoadingFormatItag.asStateFlow()
+
     private val _flyingDownloadEvent = MutableStateFlow<FlyingDownloadEvent?>(null)
     val flyingDownloadEvent: StateFlow<FlyingDownloadEvent?> = _flyingDownloadEvent.asStateFlow()
 
@@ -184,8 +190,12 @@ class StreamTubeViewModel(application: Application) : AndroidViewModel(applicati
 
     fun installDownloadedUpdate(apkFile: File) = updateManager.installDownloadedApk(apkFile)
 
+    private var openVideoJob: Job? = null
+    private var reExtractJob: Job? = null
+
     private fun reExtractAndResume(videoId: String, resumePositionMs: Long) {
-        viewModelScope.launch {
+        reExtractJob?.cancel()
+        reExtractJob = viewModelScope.launch {
             try {
                 val refreshed = repository.resolveStreamFormats(videoId, forceRefresh = true)
                 if (refreshed.bestPlaybackUrl != null && _activeVideo.value?.id == videoId) {
@@ -600,6 +610,10 @@ class StreamTubeViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun openVideo(item: MediaItem, offlineLocalPath: String? = null) {
+        openVideoJob?.cancel()
+        reExtractJob?.cancel()
+        seamlessPlayerManager.stopImmediatelyForNewVideo()
+
         _activeVideo.value = item
         _activeOfflinePath.value = offlineLocalPath
         _isWatchExpanded.value = true
@@ -639,7 +653,7 @@ class StreamTubeViewModel(application: Application) : AndroidViewModel(applicati
             return
         }
 
-        viewModelScope.launch {
+        openVideoJob = viewModelScope.launch {
             _relatedVideos.value = emptyList()
             _isRelatedLoading.value = true
             val relatedStartMs = System.currentTimeMillis()
@@ -716,8 +730,9 @@ class StreamTubeViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun closePlayer() {
-        seamlessPlayerManager.activePlayer.value.stop()
-        seamlessPlayerManager.cancelPendingSwitch()
+        openVideoJob?.cancel()
+        reExtractJob?.cancel()
+        seamlessPlayerManager.stopImmediatelyForNewVideo()
         _activeVideo.value = null
         _activeOfflinePath.value = null
         _isWatchExpanded.value = false
@@ -742,6 +757,8 @@ class StreamTubeViewModel(application: Application) : AndroidViewModel(applicati
         if (anchorOffset != null) {
             pendingDownloadOrigin = anchorOffset
         }
+        _rewardedLoadingFormatItag.value = null
+        unityAdsManager.loadRewarded()
         _downloadSheetItem.value = item
         val preParsed = repository.getCachedStream(item.id)
         if (preParsed != null && preParsed.formats.isNotEmpty()) {
@@ -764,7 +781,33 @@ class StreamTubeViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun dismissDownloadSheet() {
+        _rewardedLoadingFormatItag.value = null
         _downloadSheetItem.value = null
+    }
+
+    fun handleFormatDownloadClick(
+        activity: Activity?,
+        item: MediaItem,
+        format: MediaFormatOption
+    ) {
+        if (!AdPlacementHelper.requiresRewardedAdForDownload(format.qualityLabel)) {
+            startOneClickDownload(item, format)
+            return
+        }
+        if (_rewardedLoadingFormatItag.value != null) return
+        _rewardedLoadingFormatItag.value = format.itag
+        unityAdsManager.showRewardedForDownload(
+            activity = activity,
+            qualityLabel = format.qualityLabel,
+            onRewardEarned = {
+                _rewardedLoadingFormatItag.value = null
+                startOneClickDownload(item, format)
+            },
+            onBlocked = { reason ->
+                _rewardedLoadingFormatItag.value = null
+                _toastMessage.value = reason
+            }
+        )
     }
 
     fun startOneClickDownload(item: MediaItem, format: MediaFormatOption) {

@@ -25,3 +25,10 @@
 -dontwarn org.mozilla.javascript.tools.**
 -keep class org.schabi.newpipe.extractor.** { *; }
 
+# Unity Ads SDK keep rules
+-keepattributes SourceFile,LineNumberTable
+-keepattributes JavascriptInterface
+-keep class com.unity3d.ads.** { *; }
+-keep class com.unity3d.services.** { *; }
+-dontwarn com.unity3d.services.**
+
